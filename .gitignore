@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+*.egg
+backend/venv/
+
+# Runtime uploads and user data
+backend/temp_uploads/
+backend/user_data/
+
+# Logs (should be in /tmp/ now, but just in case)
+*.log
+backend/*.log
+frontend/*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Port allocation
+.run_ports
+.allocated_ports
+.port_allocation.lock/
+
+# Next.js (handled by frontend/.gitignore too)
+frontend/.next/
+frontend/node_modules/
+node_modules/
+.next/
+
+# Database
+frontend/prisma/dev.db
+frontend/prisma/dev.db-journal
+backend/localingo.db
+*.db
+*.db-journal
