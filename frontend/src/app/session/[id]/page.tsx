@@ -654,23 +654,18 @@ export default function SessionPage() {
               )}
             </button>
           </div>
-          <p className="text-xs text-gray-400 dark:text-gray-600 mt-1.5 text-center">
-            Cmd+Enter to translate
-          </p>
+          <div className="flex items-center justify-between mt-1.5">
+            <button
+              onClick={() => router.push("/")}
+              className="text-xs text-gray-400 hover:text-purple-500 transition-colors flex items-center gap-1"
+            >
+              <ArrowLeft size={12} />
+              Back
+            </button>
+            <span className="text-xs text-gray-400 dark:text-gray-600">Cmd+Enter to translate</span>
+          </div>
         </div>
       </div>
-
-      {/* Footer */}
-      <footer className="border-t border-gray-200 dark:border-neutral-800 px-4 sm:px-6 py-2 flex items-center justify-between text-xs text-gray-400 dark:text-gray-600 shrink-0">
-        <button
-          onClick={() => router.push("/")}
-          className="flex items-center gap-1 hover:text-purple-500 transition-colors"
-        >
-          <ArrowLeft size={14} />
-          Back
-        </button>
-        <span>&copy; chadchae</span>
-      </footer>
     </div>
   );
 }
