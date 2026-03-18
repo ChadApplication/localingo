@@ -282,9 +282,9 @@ def _get_chunk_size() -> int:
 
 
 def _split_into_chunks(text: str, max_chars: int | None = None) -> list[str]:
+    """Split text into chunks by paragraphs, then sentences if needed."""
     if max_chars is None:
         max_chars = _get_chunk_size()
-    """Split text into chunks by paragraphs, then sentences if needed."""
     if len(text) <= max_chars:
         return [text]
 

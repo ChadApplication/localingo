@@ -1,5 +1,7 @@
 # Localingo
 
+[English](README.md) | [한국어](README_KO.md) | [中文](README_ZH.md)
+
 Ollama 기반 로컬 번역 + 요약 도구. 인터넷 없이, 비용 없이, 프라이버시를 유지하며 다국어 작업.
 
 ## Prerequisites

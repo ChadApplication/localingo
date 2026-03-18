@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# Light Template - One-command Setup
+# Localingo - One-command Setup
 # ==============================================================================
 # Prerequisites: Python 3.12+, Node.js 18+
 # Usage: ./setup.sh
@@ -14,7 +14,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo -e "${BLUE}=========================================${NC}"
-echo -e "${GREEN}LightApp Project Setup${NC}"
+echo -e "${GREEN}Localingo Project Setup${NC}"
 echo -e "${BLUE}=========================================${NC}"
 
 # Check prerequisites

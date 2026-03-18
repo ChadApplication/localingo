@@ -46,6 +46,7 @@ export default function SessionPage() {
   const [sourceLang, setSourceLang] = useState("auto");
   const [targetLang, setTargetLang] = useState("ko");
   const [isTranslating, setIsTranslating] = useState(false);
+  const [translateProgress, setTranslateProgress] = useState<{ current: number; total: number; percent: number } | null>(null);
   const [ollamaStatus, setOllamaStatus] = useState<"ok" | "error" | "loading">(
     "loading",
   );
@@ -171,8 +172,10 @@ export default function SessionPage() {
       { id: botId, role: "bot", text: "", lang: targetLang, timestamp: Date.now() },
     ]);
 
+    setTranslateProgress(null);
     try {
-      const res = await fetch("/api/translate", {
+      const bp = process.env.NEXT_PUBLIC_BACKEND_PORT || "8050";
+      const res = await fetch(`http://localhost:${bp}/api/translate/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -182,15 +185,35 @@ export default function SessionPage() {
           session_id: sessionId,
         }),
       });
-      const data = await res.json();
-
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === botId
-            ? { ...m, text: data.translated || "Translation failed." }
-            : m,
-        ),
-      );
+      const reader = res.body?.getReader();
+      const decoder = new TextDecoder();
+      if (!reader) throw new Error("No reader");
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const evt = JSON.parse(line.slice(6));
+              if (evt.type === "progress") {
+                setTranslateProgress({ current: evt.current, total: evt.total, percent: evt.percent });
+              } else if (evt.type === "complete") {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === botId ? { ...m, text: evt.translated || "Translation failed." } : m,
+                  ),
+                );
+                setTranslateProgress(null);
+                setIsTranslating(false);
+              }
+            } catch {}
+          }
+        }
+      }
     } catch {
       setMessages((prev) =>
         prev.map((m) =>
@@ -201,6 +224,7 @@ export default function SessionPage() {
       );
     } finally {
       setIsTranslating(false);
+      setTranslateProgress(null);
     }
   }, [inputText, isTranslating, sourceLang, targetLang, sessionId]);
 
@@ -245,9 +269,12 @@ export default function SessionPage() {
     });
   }, []);
 
+  const [summaryProgress, setSummaryProgress] = useState(0);
+
   const handleSummarize = useCallback(
     async (text: string, msgId: string) => {
       setSummarizingId(msgId);
+      setSummaryProgress(0);
       const summaryId = crypto.randomUUID();
       setMessages((prev) => [
         ...prev,
@@ -260,22 +287,41 @@ export default function SessionPage() {
         },
       ]);
       try {
-        const res = await fetch("/api/summarize", {
+        const bp = process.env.NEXT_PUBLIC_BACKEND_PORT || "8050";
+        const res = await fetch(`http://localhost:${bp}/api/summarize/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text, language: targetLang }),
         });
-        const data = await res.json();
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === summaryId
-              ? {
-                  ...m,
-                  text: `[Summary]\n${data.summary || "Summary failed."}`,
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) throw new Error("No reader");
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const evt = JSON.parse(line.slice(6));
+                if (evt.type === "progress") {
+                  setSummaryProgress(evt.percent);
+                } else if (evt.type === "complete") {
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === summaryId
+                        ? { ...m, text: `[Summary]\n${evt.summary || "Summary failed."}` }
+                        : m,
+                    ),
+                  );
                 }
-              : m,
-          ),
-        );
+              } catch {}
+            }
+          }
+        }
       } catch {
         setMessages((prev) =>
           prev.map((m) =>
@@ -286,6 +332,7 @@ export default function SessionPage() {
         );
       } finally {
         setSummarizingId(null);
+        setSummaryProgress(0);
       }
     },
     [targetLang],
@@ -349,7 +396,7 @@ export default function SessionPage() {
 
       {/* Chat area */}
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-4">
+        <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-8">
           {messages.length === 0 && (
             <div className="flex-1 flex items-center justify-center h-full">
               <div className="text-center text-gray-400 dark:text-gray-600">
@@ -439,6 +486,16 @@ export default function SessionPage() {
                             )}
                           </button>
                         )}
+                      {msg.role === "bot" &&
+                        msg.text.startsWith("[Summary]") && (
+                          <button
+                            onClick={() => setMessages((prev) => prev.filter((m) => m.id !== msg.id))}
+                            className="text-xs text-red-400 hover:text-red-600 dark:hover:text-red-300 flex items-center gap-1"
+                          >
+                            <Trash2 size={12} />
+                            Clear
+                          </button>
+                        )}
                     </div>
                   </>
                 )}
@@ -496,6 +553,42 @@ export default function SessionPage() {
             ))}
           </select>
         </div>
+
+        {/* Progress bars — stacked, each shows when active */}
+        {(isTranslating || summarizingId) && (
+          <div className="px-4 sm:px-6 py-2 shrink-0 space-y-2">
+            {/* Translation progress */}
+            {isTranslating && (
+              <div className="px-4 py-2.5 rounded-lg bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800">
+                <div className="flex items-center justify-between text-sm font-medium mb-1.5">
+                  <span className="text-purple-700 dark:text-purple-300 flex items-center gap-2">
+                    <svg className="animate-spin h-3.5 w-3.5 text-purple-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>
+                    {translateProgress ? `Translating ${translateProgress.current}/${translateProgress.total}` : "Translating..."}
+                  </span>
+                  <span className="text-purple-600 dark:text-purple-400 font-bold text-xs">{translateProgress ? `${translateProgress.percent}%` : ""}</span>
+                </div>
+                <div className="w-full h-2 bg-purple-100 dark:bg-purple-900/40 rounded-full overflow-hidden">
+                  <div className="h-full bg-purple-500 rounded-full transition-all duration-300" style={{ width: `${Math.max(translateProgress?.percent ?? 0, 2)}%` }} />
+                </div>
+              </div>
+            )}
+            {/* Summarization progress */}
+            {summarizingId && (
+              <div className="px-4 py-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                <div className="flex items-center justify-between text-sm font-medium mb-1.5">
+                  <span className="text-amber-700 dark:text-amber-300 flex items-center gap-2">
+                    <svg className="animate-spin h-3.5 w-3.5 text-amber-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/></svg>
+                    Summarizing...
+                  </span>
+                  <span className="text-amber-600 dark:text-amber-400 font-bold text-xs">{summaryProgress}%</span>
+                </div>
+                <div className="w-full h-2 bg-amber-100 dark:bg-amber-900/40 rounded-full overflow-hidden">
+                  <div className="h-full bg-amber-500 rounded-full transition-all duration-300" style={{ width: `${Math.max(summaryProgress, 2)}%` }} />
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Input area */}
         <div className="border-t border-gray-200 dark:border-neutral-800 px-4 sm:px-6 py-3 shrink-0">
@@ -568,8 +661,15 @@ export default function SessionPage() {
       </div>
 
       {/* Footer */}
-      <footer className="border-t border-gray-200 dark:border-neutral-800 px-6 py-2 text-center text-xs text-gray-400 dark:text-gray-600 shrink-0">
-        &copy; chadchae
+      <footer className="border-t border-gray-200 dark:border-neutral-800 px-4 sm:px-6 py-2 flex items-center justify-between text-xs text-gray-400 dark:text-gray-600 shrink-0">
+        <button
+          onClick={() => router.push("/")}
+          className="flex items-center gap-1 hover:text-purple-500 transition-colors"
+        >
+          <ArrowLeft size={14} />
+          Back
+        </button>
+        <span>&copy; chadchae</span>
       </footer>
     </div>
   );
