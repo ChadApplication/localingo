@@ -34,12 +34,19 @@ from services.translate_service import (
 
 app = FastAPI(title="Localingo", version="0.1.0")
 
+ALLOWED_ORIGINS = [
+    "http://localhost:3050",
+    "http://127.0.0.1:3050",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type"],
 )
 
 

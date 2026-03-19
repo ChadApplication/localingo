@@ -1,9 +1,12 @@
 import httpx
+import logging
 import sqlite3
 import os
 import uuid
 from datetime import datetime
 from langdetect import detect, LangDetectException
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
@@ -155,57 +158,63 @@ def get_db() -> sqlite3.Connection:
 
 def init_db() -> None:
     conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS translations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_text TEXT NOT NULL,
-            translated_text TEXT NOT NULL,
-            source_lang TEXT NOT NULL,
-            target_lang TEXT NOT NULL,
-            model TEXT NOT NULL,
-            task_type TEXT DEFAULT 'translate',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL DEFAULT 'Untitled',
-            source_lang TEXT DEFAULT 'auto',
-            target_lang TEXT DEFAULT 'ko',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-    """)
-    # Add session_id column to translations if missing
-    cursor = conn.execute("PRAGMA table_info(translations)")
-    columns = [row[1] for row in cursor.fetchall()]
-    if "session_id" not in columns:
-        conn.execute(
-            "ALTER TABLE translations ADD COLUMN session_id TEXT DEFAULT NULL"
-        )
-        conn.commit()
-    conn.close()
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS translations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_text TEXT NOT NULL,
+                translated_text TEXT NOT NULL,
+                source_lang TEXT NOT NULL,
+                target_lang TEXT NOT NULL,
+                model TEXT NOT NULL,
+                task_type TEXT DEFAULT 'translate',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                source_lang TEXT DEFAULT 'auto',
+                target_lang TEXT DEFAULT 'ko',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        # Add session_id column to translations if missing
+        cursor = conn.execute("PRAGMA table_info(translations)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "session_id" not in columns:
+            conn.execute(
+                "ALTER TABLE translations ADD COLUMN session_id TEXT DEFAULT NULL"
+            )
+            conn.commit()
+    finally:
+        conn.close()
 
 
 def get_settings() -> dict:
     """Load settings from DB, filling in defaults for missing keys."""
     conn = get_db()
-    rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    conn.close()
-    saved = {r["key"]: r["value"] for r in rows}
-    return {**DEFAULT_SETTINGS, **saved}
+    try:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+        saved = {r["key"]: r["value"] for r in rows}
+        return {**DEFAULT_SETTINGS, **saved}
+    finally:
+        conn.close()
 
 
 def save_setting(key: str, value: str) -> None:
     conn = get_db()
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value)
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 async def _get_loaded_models() -> list[str]:
@@ -216,8 +225,8 @@ async def _get_loaded_models() -> list[str]:
             resp = await client.get(f"{url}/api/ps")
             if resp.status_code == 200:
                 return [m["name"] for m in resp.json().get("models", [])]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to get loaded models: %s", e)
     return []
 
 
@@ -230,8 +239,8 @@ async def _unload_model(model: str) -> None:
                 f"{url}/api/generate",
                 json={"model": model, "prompt": "", "keep_alive": "0s", "stream": False},
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Failed to unload model %s: %s", model, e)
 
 
 async def _ensure_model(needed_model: str) -> None:
@@ -249,12 +258,14 @@ async def _ensure_model(needed_model: str) -> None:
 
 def save_settings(settings: dict) -> None:
     conn = get_db()
-    for k, v in settings.items():
-        conn.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(v))
-        )
-    conn.commit()
-    conn.close()
+    try:
+        for k, v in settings.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (k, str(v))
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _get_ollama_url() -> str:
@@ -420,7 +431,8 @@ async def translate_text_stream(
                                 yield f"data: {_json.dumps({'type': 'progress', 'current': i + 1, 'total': total, 'percent': round(overall * 100), 'tokens': token_count})}\n\n"
                             if token_data.get("done"):
                                 break
-                        except Exception:
+                        except Exception as e:
+                            logger.debug("Stream parse error: %s", e)
                             continue
 
             translated_chunks.append("".join(result_tokens).strip())
@@ -428,17 +440,19 @@ async def translate_text_stream(
 
     # Save to DB
     conn = get_db()
-    conn.execute(
-        "INSERT INTO translations "
-        "(source_text, translated_text, source_lang, target_lang, model, task_type, session_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (text, translated, source_lang, target_lang, model, "translate", session_id),
-    )
-    conn.commit()
-    if session_id:
-        conn.execute("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
+    try:
+        conn.execute(
+            "INSERT INTO translations "
+            "(source_text, translated_text, source_lang, target_lang, model, task_type, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (text, translated, source_lang, target_lang, model, "translate", session_id),
+        )
         conn.commit()
-    conn.close()
+        if session_id:
+            conn.execute("UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
+            conn.commit()
+    finally:
+        conn.close()
 
     # Send complete event with full result
     yield f"data: {_json.dumps({'type': 'complete', 'translated': translated, 'source_lang': source_lang, 'target_lang': target_lang, 'model': model, 'chunks': total})}\n\n"
@@ -482,21 +496,23 @@ async def translate_text(
 
     # Save to history
     conn = get_db()
-    conn.execute(
-        "INSERT INTO translations "
-        "(source_text, translated_text, source_lang, target_lang, model, task_type, session_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (text, translated, source_lang, target_lang, model, "translate", session_id),
-    )
-    conn.commit()
-    # Update session updated_at if linked
-    if session_id:
+    try:
         conn.execute(
-            "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (session_id,),
+            "INSERT INTO translations "
+            "(source_text, translated_text, source_lang, target_lang, model, task_type, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (text, translated, source_lang, target_lang, model, "translate", session_id),
         )
         conn.commit()
-    conn.close()
+        # Update session updated_at if linked
+        if session_id:
+            conn.execute(
+                "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (session_id,),
+            )
+            conn.commit()
+    finally:
+        conn.close()
 
     return {
         "status": "success",
@@ -598,7 +614,8 @@ async def summarize_text_stream(
                         yield f"data: {_json.dumps({'type': 'progress', 'percent': pct, 'tokens': token_count})}\n\n"
                     if token_data.get("done"):
                         break
-                except Exception:
+                except Exception as e:
+                    logger.debug("Summarize stream parse error: %s", e)
                     continue
 
     summary = "".join(result_tokens).strip()
@@ -613,33 +630,38 @@ async def check_ollama() -> dict:
             if resp.status_code == 200:
                 models = [m["name"] for m in resp.json().get("models", [])]
                 return {"status": "ok", "models": models}
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Ollama connection failed: %s", e)
     return {"status": "error", "message": "Ollama not running"}
 
 
 def get_history(limit: int = 50, offset: int = 0) -> list:
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM translations ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (limit, offset),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT * FROM translations ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def delete_history(id: int) -> None:
     conn = get_db()
-    conn.execute("DELETE FROM translations WHERE id = ?", (id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("DELETE FROM translations WHERE id = ?", (id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_history_count() -> int:
     conn = get_db()
-    count = conn.execute("SELECT COUNT(*) FROM translations").fetchone()[0]
-    conn.close()
-    return count
+    try:
+        return conn.execute("SELECT COUNT(*) FROM translations").fetchone()[0]
+    finally:
+        conn.close()
 
 
 # --- Session management ---
@@ -652,62 +674,74 @@ def create_session(
 ) -> dict:
     session_id = uuid.uuid4().hex[:12]
     conn = get_db()
-    conn.execute(
-        "INSERT INTO sessions (id, title, source_lang, target_lang) VALUES (?, ?, ?, ?)",
-        (session_id, title, source_lang, target_lang),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    conn.close()
-    return dict(row)
+    try:
+        conn.execute(
+            "INSERT INTO sessions (id, title, source_lang, target_lang) VALUES (?, ?, ?, ?)",
+            (session_id, title, source_lang, target_lang),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
 
 
 def get_sessions() -> list:
     conn = get_db()
-    rows = conn.execute(
-        "SELECT s.*, "
-        "(SELECT COUNT(*) FROM translations t WHERE t.session_id = s.id) AS message_count "
-        "FROM sessions s ORDER BY s.updated_at DESC"
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT s.*, "
+            "(SELECT COUNT(*) FROM translations t WHERE t.session_id = s.id) AS message_count "
+            "FROM sessions s ORDER BY s.updated_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_session(session_id: str) -> dict | None:
     conn = get_db()
-    row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def update_session(session_id: str, title: str) -> dict | None:
     conn = get_db()
-    conn.execute(
-        "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (title, session_id),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        conn.execute(
+            "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (title, session_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def delete_session(session_id: str) -> None:
     conn = get_db()
-    conn.execute("DELETE FROM translations WHERE session_id = ?", (session_id,))
-    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("DELETE FROM translations WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_session_messages(session_id: str) -> list:
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM translations WHERE session_id = ? ORDER BY created_at ASC",
-        (session_id,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        rows = conn.execute(
+            "SELECT * FROM translations WHERE session_id = ? ORDER BY created_at ASC",
+            (session_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def export_session(session_id: str) -> dict | None:

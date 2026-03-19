@@ -258,7 +258,7 @@ export default function Home() {
         setSettingsConfigured(s.provider !== "ollama" || s.api_key !== "");
       }
     } catch {
-      // noop
+      alert("Failed to save settings.");
     }
     setShowSettings(false);
   }, [draftSettings]);
